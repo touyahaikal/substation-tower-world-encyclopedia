@@ -385,7 +385,8 @@ var $=function(s){return document.querySelector(s)};
 var esc=function(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})};
 var paras=function(t){return md(t)};
 var slug=function(s){return String(s).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60)};
-var src=function(id){var m=window.__SNAP&&window.__SNAP.imgs;return (m&&m[id])||'/_blob/'+id};
+var ghLocal={}, ghPend={};
+var src=function(id){var m=window.__SNAP&&window.__SNAP.imgs;return ghLocal[id]||(m&&m[id])||'/_blob/'+id};
 var num=function(v,min,max,dp){var n=parseFloat(v);if(isNaN(n))n=min;n=Math.min(max,Math.max(min,n));return dp?Math.round(n*10)/10:Math.round(n)};
 
 var isAdmin=false, pubMode=false, db=null, assets=null, canEdit=false, chars=[], status='loading';
@@ -411,7 +412,7 @@ function regRow(c){return '<div><dt>Reg. No.</dt><dd class="regno">'+(c.regNo?es
 function openLightbox(c){var imgs=c.images||[];if(!imgs.length)return;var lb=$('#lightbox');lb.innerHTML='<img src="'+esc(src(imgs[slide]))+'" alt="'+esc(c.name)+'"><button class="btn lb-close" type="button" aria-label="Close image">Close</button>';lb.hidden=false}
 function closeLb(){var lb=$('#lightbox');lb.hidden=true;lb.innerHTML=''}
 async function exportJson(){
-  var dl=null;try{dl=await window.claude.use('downloads')}catch(e){}
+  var dl=await getDl();
   if(!dl){toast('Export is not available in this view');return}
   try{await dl.save({filename:'character-registry.json',data:JSON.stringify({app:'character-registry',version:2,exportedAt:new Date().toISOString(),characters:chars,skills:skills,site:site,config:{lists:cfg.lists,settings:cfg.settings}},null,2)});toast('Backup ready')}catch(e){toast('Export was not saved')}
 }
@@ -1163,23 +1164,117 @@ async function loadSamples(btn){
   }catch(e){bkMsg('Could not load every sample entry.','err');btn.disabled=false}
 }
 function blobData(id){return fetch(src(id)).then(function(r){return r.blob()}).then(function(b){return new Promise(function(res){var f=new FileReader();f.onload=function(){res(f.result)};f.onerror=function(){res(null)};f.readAsDataURL(b)})}).catch(function(){return null})}
+function localSave(name,data){var bl=data instanceof Blob?data:new Blob([data],{type:/\.html?$/i.test(name)?'text/html':'application/json'});var u=URL.createObjectURL(bl),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();setTimeout(function(){a.remove();URL.revokeObjectURL(u)},1500)}
+async function getDl(){try{var d=await window.claude.use('downloads');if(d)return d}catch(e){}return {save:async function(o){localSave(o.filename,o.data)}}}
+async function buildSiteHtml(){
+  var imgs={},ids=[];chars.forEach(function(c){(c.images||[]).forEach(function(x){if(ids.indexOf(x)<0)ids.push(x)})});
+  var cur=(window.__SNAP&&window.__SNAP.imgs)||{};
+  for(var i=0;i<ids.length;i++){var cv=cur[ids[i]];if(cv&&/^images\//.test(cv)){imgs[ids[i]]=cv;continue}var u=await blobData(ids[i]);if(u)imgs[ids[i]]=u}
+  var main=Array.prototype.find.call(document.scripts,function(x){return x.textContent.indexOf('REGISTRY_MAIN')>=0});
+  var head=Array.prototype.map.call(document.querySelectorAll('style,link[rel=stylesheet]'),function(x){return x.outerHTML}).join('\n');
+  var snap={characters:chars,skills:skills,site:site,config:{lists:cfg.lists,settings:cfg.settings},imgs:imgs};
+  var json=JSON.stringify(snap).replace(/</g,'\\u003c');
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(site.brand||'Character Registry')+'</title>'+head+'<style>[hidden]{display:none!important}</style></head><body><div class="wrap"><div id="app"></div></div><div id="editor" class="overlay" hidden></div><div id="lightbox" class="overlay lb" hidden></div><div id="toast" class="toast" role="status" aria-live="polite"></div><script>window.__SNAP='+json+';<\/script><script>'+main.textContent+'<\/script></body></html>';
+}
 async function downloadSite(btn){
-  var dl=null;try{dl=await window.claude.use('downloads')}catch(e){}
-  if(!dl){bkMsg('Download is not available in this view.','err');return}
+  var dl=await getDl();
   btn.disabled=true;bkMsg('Building the site file…','');
   try{
-    var imgs={},ids=[];chars.forEach(function(c){(c.images||[]).forEach(function(x){if(ids.indexOf(x)<0)ids.push(x)})});
-    for(var i=0;i<ids.length;i++){var u=await blobData(ids[i]);if(u)imgs[ids[i]]=u}
-    var main=Array.prototype.find.call(document.scripts,function(x){return x.textContent.indexOf('REGISTRY_MAIN')>=0});
-    var head=Array.prototype.map.call(document.querySelectorAll('style,link[rel=stylesheet]'),function(x){return x.outerHTML}).join('\n');
-    var snap={characters:chars,skills:skills,site:site,config:{lists:cfg.lists,settings:cfg.settings},imgs:imgs};
-    var json=JSON.stringify(snap).replace(/</g,'\\u003c');
-    var html='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(site.brand||'Character Registry')+'</title>'+head+'<style>[hidden]{display:none!important}</style></head><body><div class="wrap"><div id="app"></div></div><div id="editor" class="overlay" hidden></div><div id="lightbox" class="overlay lb" hidden></div><div id="toast" class="toast" role="status" aria-live="polite"></div><script>window.__SNAP='+json+';<\/script><script>'+main.textContent+'<\/script></body></html>';
+    var html=await buildSiteHtml();
     await dl.save({filename:'character-registry-site.html',data:html});
     bkMsg('Site file ready. It opens offline and is read-only.','ok');
   }catch(e){bkMsg('Could not build the site file.','err')}
   btn.disabled=false;
 }
+/* ---------- GitHub hosting: public view for everyone, admin editing with a fine-grained token ---------- */
+var ghSess=null, ghDirtyF=false;
+function ghDirty(){if(ghSess)ghDirtyF=true}
+function memDb(S0){
+  var st={characters:{},skills:{},docs:{}},ls=[],cp=function(x){return JSON.parse(JSON.stringify(x))};
+  ['characters','skills'].forEach(function(n){(S0[n]||[]).forEach(function(c){var o=cp(c),id=o.id;delete o.id;st[n][id]=o})});
+  st.docs['site/main']=cp(S0.site||{});st.docs['site/config']=cp(S0.config||{});
+  function fire(){ls.forEach(function(f){f()})}
+  return {collection:function(n){return {doc:function(id){return {set:async function(d){st[n][id]=cp(d);ghDirty();fire()},delete:async function(){delete st[n][id];ghDirty();fire()}}},
+      onSnapshot:function(cb){var f=function(){cb({docs:Object.keys(st[n]).map(function(id){return {id:id,data:function(){return st[n][id]}}})})};ls.push(f);f()}}},
+    doc:function(pa){return {set:async function(d){st.docs[pa]=cp(d);ghDirty();fire()},onSnapshot:function(cb){var f=function(){cb({exists:!!st.docs[pa],data:function(){return st.docs[pa]||{}}})};ls.push(f);f()}}}};
+}
+function ghGuess(){var h=location.hostname,pp=location.pathname.split('/').filter(Boolean),o={repo:'',branch:'main',path:'index.html'};
+  if(/\.github\.io$/i.test(h)){var ow=h.split('.')[0],proj=pp.length&&!/\.[a-z]+$/i.test(pp[0]);o.repo=ow+'/'+(proj?pp[0]:ow+'.github.io');var rest=proj?pp.slice(1):pp;if(rest.length){var lt=rest[rest.length-1];o.path=/\.html?$/i.test(lt)?rest.join('/'):rest.join('/')+'/index.html'}}
+  return o}
+function ghCfg(){var g=ghGuess(),sv={};try{sv=JSON.parse(localStorage.getItem('reg-gh')||'{}')}catch(e){}return {repo:sv.repo||g.repo,branch:sv.branch||g.branch,path:sv.path||g.path,remember:!!sv.remember}}
+function ghTokGet(){try{return sessionStorage.getItem('reg-ghtok')||localStorage.getItem('reg-ghtok')||''}catch(e){return ''}}
+function ghTokSet(t,rem){try{sessionStorage.removeItem('reg-ghtok');localStorage.removeItem('reg-ghtok');if(t)(rem?localStorage:sessionStorage).setItem('reg-ghtok',t)}catch(e){}}
+async function ghFetch(tok,url,opt){opt=opt||{};var h=Object.assign({'Authorization':'Bearer '+tok,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},opt.headers||{});
+  try{return await fetch('https://api.github.com'+url,Object.assign({},opt,{headers:h}))}catch(e){throw new Error('Could not reach GitHub. Check your connection.')}}
+function b64(bytes){var r='',n=0x8000;for(var i=0;i<bytes.length;i+=n)r+=String.fromCharCode.apply(null,bytes.subarray(i,i+n));return btoa(r)}
+function openGh(){
+  var c=ghCfg();
+  var body=eHd('GitHub access')+'<p class="ibx-ed-hint">Use a fine-grained personal access token limited to this one repository, with <b>Contents: Read and write</b>. The token stays in this browser only.</p>'+eGrid(eF('g-repo','Repository (owner/name)',c.repo,{full:1,ph:'anna/character-registry'})+eF('g-branch','Branch',c.branch)+eF('g-path','Site file',c.path)+eF('g-tok','Access token','',{full:1,type:'password',ph:'github_pat_…',attr:'autocomplete="off" spellcheck="false"'})+'<label class="ibx-ed-field full"><span class="ibx-ed-label"><input type="checkbox" id="g-rem"'+(c.remember?' checked':'')+'> Keep me signed in on this device</span></label>');
+  var ed=$('#editor');ed.innerHTML=eShell('Admin sign-in','Admin sign-in',body,'<button class="btn" type="button" data-ed="cancel">Cancel</button><button class="btn primary" type="button" data-act="ghdo">Sign in</button>');ed.hidden=false;var f=$(c.repo?'#g-tok':'#g-repo');if(f)f.focus();
+}
+async function ghSignIn(tok,cfg0,remember,silent){
+  var err=function(m){if(silent)throw new Error(m);showErr(m);throw new Error(m)};
+  if(!tok)err('Paste your access token.');
+  var repo=String(cfg0.repo||'').trim().replace(/^https?:\/\/github\.com\//i,'').replace(/\.git$/,'').replace(/\/+$/,'');
+  if(!/^[\w.-]+\/[\w.-]+$/.test(repo))err('Type the repository as owner/name, for example anna/character-registry.');
+  var r=await ghFetch(tok,'/repos/'+repo);
+  if(r.status===401)err('GitHub did not accept that token.');
+  if(r.status===404)err('That repository was not found, or the token cannot see it.');
+  if(!r.ok)err('GitHub answered '+r.status+'.');
+  var j=await r.json(),pm=j.permissions||{};
+  if(!(pm.push||pm.admin||pm.maintain))err('This token can read the repository but not write to it. Give it Contents: Read and write.');
+  var branch=String(cfg0.branch||j.default_branch||'main').trim(),path=String(cfg0.path||'index.html').trim().replace(/^\/+/,'')||'index.html';
+  var cu='/repos/'+repo+'/contents/'+encodeURI(path)+'?ref='+encodeURIComponent(branch),sha=null,snap=window.__SNAP;
+  var m=await ghFetch(tok,cu);
+  if(m.ok){sha=(await m.json()).sha;var rr=await ghFetch(tok,cu,{headers:{'Accept':'application/vnd.github.raw+json'}});
+    if(rr.ok){var tx=await rr.text(),a=tx.indexOf('window.__SNAP='),b=a<0?-1:tx.indexOf(';<\/script>',a);if(a>=0&&b>a){try{snap=JSON.parse(tx.slice(a+14,b))}catch(e){}}}}
+  else if(m.status!==404)err('GitHub answered '+m.status+' for the site file.');
+  window.__SNAP=snap;
+  ghSess={repo:repo,branch:branch,path:path,tok:tok,sha:sha};ghDirtyF=false;
+  try{localStorage.setItem('reg-gh',JSON.stringify({repo:repo,branch:branch,path:path,remember:!!remember}))}catch(e){}
+  ghTokSet(tok,remember);
+  db=memDb(snap);
+  assets={upload:async function(f){var id='i'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);ghPend[id]=f;ghLocal[id]=URL.createObjectURL(f);ghDirty();return {id:id}}};
+  isAdmin=canEdit=true;pubMode=false;status='ready';
+  startLive();
+}
+var EXTS={'image/jpeg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp','image/svg+xml':'svg','image/avif':'avif'};
+async function ghSendImages(g){
+  var ids=[];chars.forEach(function(c){(c.images||[]).forEach(function(x){if(ids.indexOf(x)<0)ids.push(x)})});
+  window.__SNAP.imgs=window.__SNAP.imgs||{};var im=window.__SNAP.imgs,dir=g.path.indexOf('/')>=0?g.path.replace(/\/[^\/]*$/,'')+'/':'',n=0;
+  for(var i=0;i<ids.length;i++){var id=ids[i],v=im[id];
+    if(!ghPend[id]&&(!v||/^images\//.test(v)))continue;
+    var bl=ghPend[id]||await (await fetch(v)).blob(),rel='images/'+id+'.'+(EXTS[bl.type]||'jpg'),up='/repos/'+g.repo+'/contents/'+encodeURI(dir+rel);
+    toast('Uploading picture '+(++n)+'…');
+    var body={message:'Add picture '+rel,content:b64(new Uint8Array(await bl.arrayBuffer())),branch:g.branch};
+    var r=await ghFetch(g.tok,up,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.status===422||r.status===409){var ex=await ghFetch(g.tok,up+'?ref='+encodeURIComponent(g.branch));if(ex.ok){body.sha=(await ex.json()).sha;r=await ghFetch(g.tok,up,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})}}
+    if(!r.ok){var t='';try{t=(await r.json()).message}catch(e){}throw new Error('Picture upload failed: '+(t||r.status))}
+    if(!ghLocal[id])ghLocal[id]=URL.createObjectURL(bl);
+    im[id]=rel;delete ghPend[id];
+  }
+}
+async function ghPublish(btn){
+  var g=ghSess;if(!g)return;btn.disabled=true;toast('Publishing to GitHub…');
+  try{
+    var url='/repos/'+g.repo+'/contents/'+encodeURI(g.path),cur=null;
+    var m=await ghFetch(g.tok,url+'?ref='+encodeURIComponent(g.branch));
+    if(m.ok)cur=(await m.json()).sha;else if(m.status!==404)throw new Error('GitHub answered '+m.status);
+    if(g.sha&&cur&&cur!==g.sha){toast('The file on GitHub changed since you signed in. Sign out and in again to load it first.');btn.disabled=false;return}
+    await ghSendImages(g);
+    var html=await buildSiteHtml(),bytes=new TextEncoder().encode(html);
+    var r=await ghFetch(g.tok,url,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:'Update the registry from the admin panel',content:b64(bytes),branch:g.branch,sha:cur||undefined})});
+    if(!r.ok){var t='';try{t=(await r.json()).message}catch(e){}throw new Error(t||('GitHub answered '+r.status))}
+    var rj=await r.json();g.sha=rj.content&&rj.content.sha;ghDirtyF=false;toast('Published. The live site updates in about a minute.');render();
+  }catch(e){toast('Could not publish: '+((e&&e.message)||'try again'))}
+  btn.disabled=false;
+}
+function ghOut(){if(ghDirtyF&&!ghOut.ask){ghOut.ask=1;toast('Unpublished changes. Press Sign out again to discard them.');return}ghTokSet('',false);location.reload()}
+document.addEventListener('click',function(e){var t=e.target.closest&&e.target.closest('[data-act^=gh]');if(!t)return;e.preventDefault();var a=t.dataset.act;
+  if(a==='ghlogin')openGh();
+  else if(a==='ghout')ghOut();
+  else if(a==='ghpub')ghPublish(t);
+  else if(a==='ghdo'){t.disabled=true;ghSignIn(val('g-tok'),{repo:val('g-repo'),branch:val('g-branch'),path:val('g-path')},$('#g-rem').checked).then(function(){closeEditor();toast('Signed in as admin')}).catch(function(){}).then(function(){t.disabled=false})}});
 async function removeSamples(btn){
   if(!btn.dataset.arm){btn.dataset.arm='1';btn.textContent='Confirm removal';setTimeout(function(){if(btn.isConnected){delete btn.dataset.arm;btn.textContent='Remove sample entries'}},4000);return}
   btn.disabled=true;var n=0;
@@ -1229,7 +1324,7 @@ function stat(c,k){var v=c.stats&&c.stats[k];return typeof v==='number'?v:1}
 function miss(c,r){var v=c.missions&&c.missions[r];return typeof v==='number'?v:0}
 
 function topbar(extra){
-  return '<div class="bar"><a class="brand" href="#welcome">'+esc(site.brand)+'</a><nav class="mainnav" aria-label="Sections">'+navLinks()+'</nav><div>'+(extra||'')+(isAdmin?'<button class="btn" data-act="pubtoggle" title="Switch between admin editing and the public view">'+(pubMode?'← Admin mode':'Public view')+'</button> ':'')+(canEdit?' <button class="btn" data-act="site">Customize site</button>':'')+'</div></div>';
+  return '<div class="bar"><a class="brand" href="#welcome">'+esc(site.brand)+'</a><nav class="mainnav" aria-label="Sections">'+navLinks()+'</nav><div>'+(extra||'')+(ghSess?'<button class="btn primary" data-act="ghpub">Publish to GitHub'+(ghDirtyF?' •':'')+'</button> <button class="btn" data-act="ghout">Sign out</button> ':'')+(isAdmin?'<button class="btn" data-act="pubtoggle" title="Switch between admin editing and the public view">'+(pubMode?'← Admin mode':'Public view')+'</button> ':'')+(canEdit?' <button class="btn" data-act="site">Customize site</button>':'')+'</div></div>';
 }
 function loadingNote(){
   if(status==='unavailable')return '<div class="note"><strong>The registry needs a signed-in view.</strong><br>Open this page while signed in to claude.ai to read the character files.</div>';
@@ -1307,7 +1402,7 @@ function fact(l,v,cls){return '<div><dt>'+l+'</dt><dd'+(cls?' class="'+cls+'"':'
 function render(){
   var id=route();document.title=site.brand;
   var hs=location.hash.slice(1);
-  $('#app').innerHTML=(id?viewChar(id):hs===''||hs==='welcome'||(!canEdit&&(hs==='lists'||hs==='guide'))?viewLanding():hs==='lists'?viewLists():hs==='guide'?viewGuide():hs==='locations'?viewLocations():hs.indexOf('loc-')===0?viewLocation(hs.slice(4)):hs.indexOf('nation-')===0?viewNation(hs.slice(7)):hs==='skills'?viewSkills():hs.indexOf('skill-')===0?viewSkill(hs.slice(6)):viewHome())+(site.footer?'<footer class="foot">'+esc(site.footer)+'</footer>':'');
+  $('#app').innerHTML=(id?viewChar(id):hs===''||hs==='welcome'||(!canEdit&&(hs==='lists'||hs==='guide'))?viewLanding():hs==='lists'?viewLists():hs==='guide'?viewGuide():hs==='locations'?viewLocations():hs.indexOf('loc-')===0?viewLocation(hs.slice(4)):hs.indexOf('nation-')===0?viewNation(hs.slice(7)):hs==='skills'?viewSkills():hs.indexOf('skill-')===0?viewSkill(hs.slice(6)):viewHome())+((site.footer||(window.__SNAP&&!ghSess))?'<footer class="foot">'+esc(site.footer||'')+((window.__SNAP&&!ghSess)?' <a href="#welcome" data-act="ghlogin">Admin</a>':'')+'</footer>':'');
 }
 
 /* ---------- editor ---------- */
@@ -1535,15 +1630,7 @@ edEl.addEventListener('dragover',function(e){if(draft&&assets){e.preventDefault(
 edEl.addEventListener('dragleave',function(e){if(e.target===edEl)edEl.classList.remove('drag')});
 edEl.addEventListener('drop',function(e){e.preventDefault();edEl.classList.remove('drag');if(draft&&assets)addFiles(Array.prototype.slice.call(e.dataTransfer.files))});
 
-/* ---------- boot ---------- */
-render();
-(async function(){
-  if(window.__SNAP){var S0=window.__SNAP;chars=S0.characters||[];skills=S0.skills||[];skillsReady=true;cfg={lists:(S0.config||{}).lists||{},settings:(S0.config||{}).settings||{}};applyCfg();site=mergeSite(S0.site);applyTheme(site.theme);status='ready';canEdit=false;render();return}
-  var cl=window.claude;
-  try{db=cl&&await cl.use('db')}catch(e){db=null}
-  if(!db){status='unavailable';render();return}
-  try{var u=await cl.use('user');isAdmin=canEdit=!!(u&&u.canEdit&&await u.canEdit());try{if(isAdmin&&localStorage.getItem('reg-pub')==='1'){pubMode=true;canEdit=false}}catch(e2){}}catch(e){}
-  try{assets=await cl.use('assets')}catch(e){assets=null}
+function startLive(){
   db.collection('skills').onSnapshot(function(sn){
     skills=sn.docs.map(function(d){var o=Object.assign({},d.data());o.id=d.id;return o});skillsReady=true;
     if(document.activeElement&&document.activeElement.id==='skq')updateSkillGrid();else render();
@@ -1566,6 +1653,17 @@ render();
     status='ready';
     if(!document.activeElement||document.activeElement.id!=='q')render();else updateGrid();
   },function(){clearTimeout(timer);status='error';render()});
+}
+/* ---------- boot ---------- */
+render();
+(async function(){
+  if(window.__SNAP){var S0=window.__SNAP;chars=S0.characters||[];skills=S0.skills||[];skillsReady=true;cfg={lists:(S0.config||{}).lists||{},settings:(S0.config||{}).settings||{}};applyCfg();site=mergeSite(S0.site);applyTheme(site.theme);status='ready';canEdit=false;render();var tk=ghTokGet(),gc=ghCfg();if(tk&&gc.repo){try{await ghSignIn(tk,gc,gc.remember,true)}catch(e){if(/did not accept/.test(e.message))ghTokSet('',false)}}return}
+  var cl=window.claude;
+  try{db=cl&&await cl.use('db')}catch(e){db=null}
+  if(!db){status='unavailable';render();return}
+  try{var u=await cl.use('user');isAdmin=canEdit=!!(u&&u.canEdit&&await u.canEdit());try{if(isAdmin&&localStorage.getItem('reg-pub')==='1'){pubMode=true;canEdit=false}}catch(e2){}}catch(e){}
+  try{assets=await cl.use('assets')}catch(e){assets=null}
+  startLive();
 })();
 })();
 </script></body></html>
